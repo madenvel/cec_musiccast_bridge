@@ -16,3 +16,25 @@ Please check the CLI arguments for more informaiton.
 - [nlohmann json](https://github.com/nlohmann/json)
 - boost::program_options
 - [libcec](https://github.com/Pulse-Eight/libcec)
+
+## Run as a systemd service
+
+/lib/systemd/system/cec-musiccast-bridge.service
+```
+[Unit]
+Description=Ensure file exists on boot
+After=multi-user.target
+[Service]
+ExecStart=/home/envel/Source/cec/cec -a <SERVER_IP> -i <MUSICCAST_OUTPUT> -v <VOLUME>
+User=envel
+[Install]
+WantedBy=multi-user.target
+```
+
+Create a symlink:
+```
+sudo ln -s /lib/systemd/system/cec-musiccast-bridge.service /etc/systemd/system/multi-user.target.wants/cec-musiccast-bridge.service
+sudo chmod 0777 /etc/systemd/system/multi-user.target.wants/cec-musiccast-bridge.service
+```
+
+reboot
