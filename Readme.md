@@ -34,7 +34,7 @@ WantedBy=multi-user.target
 Create a symlink:
 ```
 sudo ln -s /lib/systemd/system/cec-musiccast-bridge.service /etc/systemd/system/multi-user.target.wants/cec-musiccast-bridge.service
-sudo chmod 0777 /etc/systemd/system/multi-user.target.wants/cec-musiccast-bridge.service
+sudo systemctl enable cec-musiccast-bridge
 ```
 
 reboot
