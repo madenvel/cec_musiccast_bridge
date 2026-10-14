@@ -1,55 +1,56 @@
 #include <iostream>
+#include <atomic>
+#include <chrono>
+#include <fstream>
 #include <libcec/cec.h>
+#include <mutex>
 #include <optional>
 #include <signal.h>
 #include <sstream>
 #include <unistd.h>
 #include <vector>
 
-#include <curlpp/Easy.hpp>
-#include <curlpp/Options.hpp>
-#include <curlpp/cURLpp.hpp>
+#include <curl/curl.h>
+#include "musiccast_network.h"
 
 #include <nlohmann/json.hpp>
 
 #include <boost/program_options.hpp>
 
-void sighandler(int signal) {
-  std::cerr << "Caught SIGINT - interrupting" << std::endl;
-}
+volatile sig_atomic_t stopping = 0;
+void sighandler(int) { stopping = 1; }
 
 struct DeviceData {
   std::string inputName;
   int volume;
   std::string address;
+  std::string deviceId;
+  std::string interfaceAddress;
+  int discoveryTimeout = 5;
+  bool discoverOnly = false;
 };
 
 using json = nlohmann::json;
 
 class MusicCast {
+  mutable std::mutex requestMutex;
+  std::string address;
+  const std::string deviceId;
+  mutable std::atomic<bool> online{true};
 
   json get(const std::string &url) const {
+    std::lock_guard<std::mutex> lock(requestMutex);
+    if (!online)
+      return json{};
     try {
-      curlpp::Cleanup myCleanup;
-      curlpp::Easy myRequest;
-      myRequest.setOpt<curlpp::options::Url>(baseUrl + url);
-      std::ostringstream os;
-      os << myRequest;
-      return json::parse(os.str());
-    } catch (curlpp::RuntimeError &e) {
-      std::cerr << "Failed to perform MusicCast request: " << e.what()
-                << std::endl;
-    } catch (curlpp::LogicError &e) {
+      return musiccast::requestJson(address, url);
+    } catch (const std::exception &e) {
+      online = false;
       std::cerr << "Failed to perform MusicCast request: " << e.what()
                 << std::endl;
     }
     return json{};
   }
-
-  const std::string baseUrl;
-
-  int currentVolume;
-  int maxVolume;
 
 public:
   struct ZoneStatus {
@@ -61,8 +62,43 @@ public:
     std::string input;
   };
 
-  MusicCast(const std::string &address)
-      : baseUrl("http://" + address + "/YamahaExtendedControl/v1/") {}
+  explicit MusicCast(const musiccast::Device &device)
+      : address(device.address), deviceId(device.id) {}
+
+  bool isOnline() const { return online; }
+
+  void checkConnection(const DeviceData &options) {
+    // The endpoint can change while CEC callbacks run; replace it under the
+    // same lock used for requests. Always retain the selected device identity.
+    std::string previousAddress;
+    {
+      std::lock_guard<std::mutex> lock(requestMutex);
+      previousAddress = address;
+    }
+    auto device = musiccast::probe(previousAddress);
+    if (!device || !musiccast::sameId(device->id, deviceId)) {
+      online = false;
+      if (options.address == "auto") {
+        try {
+          device = musiccast::selectDevice(
+              musiccast::discover(options.discoveryTimeout, options.interfaceAddress),
+              deviceId);
+        } catch (const std::exception &e) {
+          std::cerr << "Waiting for MusicCast: " << e.what() << std::endl;
+          return;
+        }
+      } else {
+        std::cerr << "Waiting for MusicCast at " << previousAddress << std::endl;
+        return;
+      }
+    }
+    std::lock_guard<std::mutex> lock(requestMutex);
+    if (!online || address != device->address)
+      std::cout << "MusicCast reconnected: " << device->id << " at "
+                << device->address << std::endl;
+    address = device->address;
+    online = true;
+  }
 
   void setPower(const std::string &power) const {
     std::cout << "Setting MusicCast power status to " << power << std::endl;
@@ -84,16 +120,19 @@ public:
   void volumeDown() { get("main/setVolume?volume=down"); }
 
   std::optional<ZoneStatus> getMainZoneStatus() const {
-    auto data = get("main/getStatus");
-    if (data["response_code"] != 0) {
+    try {
+      const auto data = get("main/getStatus");
+      if (!data.is_object() || data.value("response_code", -1) != 0)
+        return std::nullopt;
+      ZoneStatus status{data.at("power"), data.at("sleep"), data.at("volume"),
+                        data.at("max_volume"), data.at("mute"), data.at("input")};
+      if (status.max_volume <= 0)
+        return std::nullopt;
+      return status;
+    } catch (const json::exception &e) {
+      std::cerr << "Invalid MusicCast status: " << e.what() << std::endl;
       return std::nullopt;
     }
-    return ZoneStatus{.power = data["power"],
-                      .sleep = data["sleep"],
-                      .volume = data["volume"],
-                      .max_volume = data["max_volume"],
-                      .mute = data["mute"],
-                      .input = data["input"]};
   }
 };
 
@@ -115,27 +154,49 @@ DeviceData parseCmdlineOpts(int argc, char *argv[]) {
     DeviceData deviceData;
 
     namespace po = boost::program_options;
-    po::options_description desc(
-        "This tool make Yamaha MusicCast device respond to TV commands"
-        "inluding power on / off and volume control");
-    desc.add_options()("help,h", "Show this information")(
-        "input,i", po::value(&deviceData.inputName)->required(),
+    std::string configFile;
+    po::options_description settings("MusicCast settings");
+    settings.add_options()(
+        "input,i", po::value(&deviceData.inputName)->default_value("optical1"),
         "MusicCast input name to set when power on")(
-        "address,a", po::value(&deviceData.address)->required(),
-        "The address of MusicCast device")(
-        "volume,v", po::value(&deviceData.volume)->default_value(90));
+        "address,a", po::value(&deviceData.address)->default_value("auto"),
+        "MusicCast hostname/IPv4 address, or auto for SSDP discovery")(
+        "volume,v", po::value(&deviceData.volume)->default_value(90),
+        "Power-on volume in Yamaha units, not percent")(
+        "device-id", po::value(&deviceData.deviceId)->default_value(""),
+        "Select the stable device ID reported by --discover")(
+        "discovery-timeout", po::value(&deviceData.discoveryTimeout)->default_value(5),
+        "SSDP listening time in seconds (1-30), plus API probes")(
+        "interface", po::value(&deviceData.interfaceAddress)->default_value(""),
+        "Local IPv4 address for discovery (default: all multicast interfaces)");
+    po::options_description desc("Bridge TV HDMI-CEC commands to Yamaha MusicCast");
+    desc.add_options()("help,h", "Show this information")(
+        "config,c", po::value(&configFile), "Read configuration file; CLI takes precedence")(
+        "discover", po::bool_switch(&deviceData.discoverOnly),
+        "Print discovered devices as JSON and exit without opening CEC");
+    desc.add(settings);
 
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
 
     if (vm.count("help")) {
       std::cout << desc << std::endl;
-      exit(1);
+      exit(0);
+    }
+    if (vm.count("config")) {
+      std::ifstream stream(vm["config"].as<std::string>());
+      if (!stream)
+        throw std::runtime_error("Cannot read configuration file");
+      po::store(po::parse_config_file(stream, settings), vm);
     }
     po::notify(vm);
-    std::cout << "DeviceData: input=" << deviceData.inputName
-              << ", address=" << deviceData.address
-              << ", volume=" << deviceData.volume << std::endl;
+    if (deviceData.discoveryTimeout < 1 || deviceData.discoveryTimeout > 30)
+      throw std::runtime_error("--discovery-timeout must be between 1 and 30");
+    if (deviceData.volume < 0)
+      throw std::runtime_error("--volume must be a nonnegative number of Yamaha units");
+    if (deviceData.inputName.empty() || deviceData.inputName.find_first_not_of(
+          "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != std::string::npos)
+      throw std::runtime_error("Invalid MusicCast input name");
 
     return deviceData;
   } catch (std::exception &e) {
@@ -158,6 +219,8 @@ public:
       : isOn(false), musicCast(musicCast), deviceData(deviceData) {}
 
   void update(bool newIsOn) {
+    if (!musicCast.isOnline())
+      return;
     if (isOn == newIsOn) {
       return;
     }
@@ -179,7 +242,8 @@ public:
                   << std::endl;
       }
     }
-    isOn = newIsOn;
+    if (musicCast.isOnline())
+      isOn = newIsOn;
   }
 };
 
@@ -212,6 +276,8 @@ struct CommandReceviedCallback {
       std::cout << "Requested to report audio status" << std::endl;
       transmitReportAudioStatus();
       break;
+    default:
+      break;
     }
   }
 
@@ -219,8 +285,6 @@ private:
   void processGetSystemAudioModeRequest(const CEC::cec_datapacket &parameters) {
     std::cout << "Got system audio mode request - turning on MusicCast"
               << std::endl;
-    uint16_t physAddr =
-        ((uint16_t)parameters.data[1] << 8) + parameters.data[0];
     bool on = parameters.size != 0;
     dps->update(on);
     CEC::cec_command command;
@@ -236,6 +300,8 @@ private:
   }
 
   void processUserControlPressed(const CEC::cec_datapacket &parameters) {
+    if (parameters.size == 0)
+      return;
     const uint8_t keycode = parameters.data[0];
     switch (keycode) {
     case CEC::CEC_USER_CONTROL_CODE_VOLUME_DOWN:
@@ -251,6 +317,7 @@ private:
     auto zoneStatus = musicCast->getMainZoneStatus();
     if (!zoneStatus) {
       std::cerr << "Error while retrieving MusicCast status" << std::endl;
+      return;
     }
 
     CEC::cec_command command;
@@ -259,7 +326,7 @@ private:
                              CEC::CEC_OPCODE_REPORT_AUDIO_STATUS);
     int volume = (100 * zoneStatus->volume / zoneStatus->max_volume) & 0x7f;
     command.parameters.data[0] =
-        (zoneStatus->mute ? 0xf0 : 0x00) | (uint8_t)volume;
+        (zoneStatus->mute ? 0x80 : 0x00) | (uint8_t)volume;
     command.parameters.size = 1;
 
     if (!adapter->Transmit(command)) {
@@ -269,13 +336,45 @@ private:
 };
 
 int main(int argc, char *argv[]) {
-  if (signal(SIGINT, sighandler) == SIG_ERR) {
+  if (signal(SIGINT, sighandler) == SIG_ERR || signal(SIGTERM, sighandler) == SIG_ERR) {
     std::cerr << "Can't register sighandler" << std::endl;
     return -1;
   }
 
   DeviceData deviceData = parseCmdlineOpts(argc, argv);
-  MusicCast musicCast(deviceData.address);
+  if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
+    return 1;
+  struct CurlCleanup { ~CurlCleanup() { curl_global_cleanup(); } } curlCleanup;
+  musiccast::Device selected;
+  try {
+    if (deviceData.discoverOnly || deviceData.address == "auto") {
+      const auto devices = musiccast::discover(deviceData.discoveryTimeout,
+                                               deviceData.interfaceAddress);
+      if (deviceData.discoverOnly) {
+        auto output = json::array();
+        for (const auto &device : devices)
+          output.push_back({{"address", device.address}, {"device_id", device.id},
+                            {"model_name", device.model}});
+        std::cout << output.dump(2) << std::endl;
+        return devices.empty() ? 1 : 0;
+      }
+      selected = musiccast::selectDevice(devices, deviceData.deviceId);
+    } else {
+      auto device = musiccast::probe(deviceData.address);
+      if (!device)
+        throw std::runtime_error("No MusicCast API at " + deviceData.address);
+      selected = musiccast::selectDevice({*device}, deviceData.deviceId);
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "Error: " << e.what() << std::endl;
+    return 1;
+  }
+  if (stopping)
+    return 0;
+  std::cout << "MusicCast: " << selected.model << " (" << selected.id << ") at "
+            << selected.address << ", input=" << deviceData.inputName
+            << ", volume=" << deviceData.volume << std::endl;
+  MusicCast musicCast(selected);
   DevicePowerStatus dps(musicCast, deviceData);
 
   CEC::libcec_configuration config;
@@ -299,17 +398,18 @@ int main(int argc, char *argv[]) {
 
   if (!adapter->SetCallbacks(&callbacks, &callback)) {
     std::cerr << "Failed to enable the callbacks" << std::endl;
-    exit(-1);
+    CECDestroy(adapter);
+    return 1;
   }
 
+  int result = 0;
   try {
     std::vector<CEC::cec_adapter_descriptor> deviceList(5);
     auto size = adapter->DetectAdapters(deviceList.data(), 5);
-    deviceList.resize(size);
-
-    if (deviceList.empty()) {
+    if (size <= 0) {
       throw std::runtime_error("Failed to find adapters");
     }
+    deviceList.resize(size);
 
     std::cout << "Opening " << deviceList[0].strComName << " path "
               << deviceList[0].strComPath << std::endl;
@@ -320,13 +420,22 @@ int main(int argc, char *argv[]) {
     }
 
     std::cout << "Connected successfully." << std::endl;
-    pause();
+    auto nextCheck = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!stopping) {
+      sleep(1);
+      if (!stopping && std::chrono::steady_clock::now() >= nextCheck) {
+        musicCast.checkConnection(deviceData);
+        nextCheck = std::chrono::steady_clock::now() +
+                    std::chrono::seconds(musicCast.isOnline() ? 30 : 10);
+      }
+    }
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;
+    result = 1;
   }
 
   adapter->Close();
   CECDestroy(adapter);
 
-  return 0;
+  return result;
 }

@@ -1,0 +1,20 @@
+Source: cec-musiccast-bridge
+Section: sound
+Priority: optional
+Maintainer: Dmitry Savin <envelsavinds@gmail.com>
+Build-Depends: debhelper-compat (= 13), libcec-dev, libcurl4-openssl-dev,
+ libboost-program-options-dev, nlohmann-json3-dev, python3:native
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/madenvel/cec_musiccast_bridge
+Vcs-Git: https://github.com/madenvel/cec_musiccast_bridge.git
+Vcs-Browser: https://github.com/madenvel/cec_musiccast_bridge
+
+Package: cec-musiccast-bridge
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser, udev
+Description: control Yamaha MusicCast receivers using HDMI-CEC
+ Presents an HDMI-CEC audio system to a television and forwards power,
+ input and volume commands to a Yamaha MusicCast receiver. Discovers
+ receivers using SSDP and can select a stable device ID across IP changes.
+ Includes configuration, a systemd service and device permission rules.

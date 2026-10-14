@@ -1,0 +1,7 @@
+cec-musiccast-bridge (0.2.0-1) unstable; urgency=medium
+
+  * Add SSDP discovery, stable device selection and automatic reconnection.
+  * Package the bridge with configuration, systemd and device access rules.
+  * Bound HTTP requests and handle unavailable or malformed device responses.
+
+ -- Dmitry Savin <envelsavinds@gmail.com>  Wed, 14 Oct 2026 00:00:00 +0100

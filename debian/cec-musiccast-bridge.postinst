@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+if [ "$1" = configure ]; then
+    if ! getent group cec-musiccast >/dev/null; then
+        addgroup --system cec-musiccast
+    fi
+    if ! getent passwd cec-musiccast >/dev/null; then
+        adduser --system --ingroup cec-musiccast --home /nonexistent \
+            --no-create-home --disabled-login cec-musiccast
+    fi
+    # Apply the newly installed rules to adapters already plugged in.
+    # dh_installudev's generated snippet reloads rules below as well.
+    if [ -d /run/udev ]; then
+        udevadm control --reload-rules || true
+        udevadm trigger --subsystem-match=cec --action=change || true
+        udevadm trigger --subsystem-match=tty --attr-match=idVendor=2548 --action=change || true
+    fi
+fi
+
+#DEBHELPER#

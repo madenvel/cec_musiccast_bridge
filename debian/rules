@@ -1,0 +1,18 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+include /usr/share/dpkg/default.mk
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	dh_auto_build -- CXX=$(DEB_HOST_GNU_TYPE)-g++
+
+override_dh_auto_test:
+ifeq ($(DEB_BUILD_GNU_TYPE),$(DEB_HOST_GNU_TYPE))
+	dh_auto_test -- CXX=$(DEB_HOST_GNU_TYPE)-g++
+endif
+
+override_dh_auto_install:
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/cec-musiccast-bridge PREFIX=/usr

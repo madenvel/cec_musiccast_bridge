@@ -1,0 +1,56 @@
+name: Debian packages
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v[0-9]*', '[0-9]*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to rebuild (for example v0.3.0)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    container: debian:trixie
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates build-essential debhelper \
+            libcec-dev libcurl4-openssl-dev libboost-program-options-dev \
+            nlohmann-json3-dev python3
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - name: Set package version from tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            python3 scripts/prepare-debian-version.py -- "$RELEASE_TAG"
+          fi
+          version=$(dpkg-parsechangelog --show-field Version)
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Build and test
+        run: ./scripts/build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cec-musiccast-bridge-${{ steps.version.outputs.version }}-trixie-${{ matrix.arch }}
+          path: ../*.deb
+          if-no-files-found: error

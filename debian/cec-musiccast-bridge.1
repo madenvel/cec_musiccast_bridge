@@ -1,0 +1,50 @@
+.TH CEC-MUSICCAST-BRIDGE 1 "October 2026" "0.2.0"
+.SH NAME
+cec-musiccast-bridge \- control Yamaha MusicCast using HDMI-CEC
+.SH SYNOPSIS
+.B cec-musiccast-bridge
+.RI [ options ]
+.SH DESCRIPTION
+Presents an audio system on the HDMI-CEC bus and forwards TV power and
+volume commands to a MusicCast receiver. With automatic discovery, the
+receiver is selected using SSDP and its Yamaha Extended Control API.
+.SH OPTIONS
+.TP
+.B \-h, \-\-help
+Display command line help.
+.TP
+.B \-\-discover
+Print a JSON array of receivers without opening a CEC adapter. Return 1
+when none are found. Discovery does not change receiver settings.
+.TP
+.BI "\-c, \-\-config " file
+Read key=value settings. Explicit command line options take precedence.
+.TP
+.BI "\-a, \-\-address " address
+Receiver hostname or IPv4 address, or auto (default) for SSDP discovery.
+.TP
+.BI "\-\-device-id " id
+Select the stable Yamaha device ID. Required when discovery finds more
+than one receiver.
+.TP
+.BI "\-i, \-\-input " input
+Receiver input connected to the TV (default: optical1).
+.TP
+.BI "\-v, \-\-volume " volume
+Power-on volume in Yamaha units, not percent (default: 90).
+.TP
+.BI "\-\-discovery-timeout " seconds
+SSDP listening time from 1 to 30 seconds (default: 5). Each candidate
+is subsequently probed with an HTTP timeout of 3 seconds.
+.TP
+.BI "\-\-interface " address
+Local IPv4 address for SSDP, or all active multicast interfaces by default.
+.SH FILES
+.I /etc/cec-musiccast-bridge.conf
+.SH SERVICE
+The Debian package enables and starts cec-musiccast-bridge.service.
+The service retries discovery after startup failures and periodically
+reconnects to the same device ID when its address changes.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR journalctl (1)

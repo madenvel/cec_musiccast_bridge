@@ -1,0 +1,15 @@
+/cec
+/tests/network_test
+/tests/bridge_test
+__pycache__/
+/debian/.debhelper/
+/debian/cec-musiccast-bridge/
+/debian/cec-musiccast-bridge-dbgsym/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.debhelper
+/debian/*.substvars
+/build/
+*.deb
+*.buildinfo
+*.changes

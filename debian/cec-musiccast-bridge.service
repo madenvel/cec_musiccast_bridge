@@ -1,0 +1,23 @@
+[Unit]
+Description=HDMI-CEC to Yamaha MusicCast bridge
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=cec-musiccast
+Group=cec-musiccast
+SupplementaryGroups=video dialout
+ExecStart=/usr/bin/cec-musiccast-bridge --config /etc/cec-musiccast-bridge.conf
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
