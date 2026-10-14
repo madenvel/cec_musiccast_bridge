@@ -49,8 +49,12 @@ jobs:
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Build and test
         run: ./scripts/build-deb.sh
+      - name: Collect Debian packages
+        run: |
+          mkdir -p build/debian
+          cp ../*.deb build/debian/
       - uses: actions/upload-artifact@v4
         with:
           name: cec-musiccast-bridge-${{ steps.version.outputs.version }}-trixie-${{ matrix.arch }}
-          path: ../*.deb
+          path: build/debian/*.deb
           if-no-files-found: error
